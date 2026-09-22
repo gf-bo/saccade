@@ -4,6 +4,7 @@ from torch import Tensor, nn
 from .config import SaccadeConfig
 from .blocks import AbsoluteEmbedding, CausalLocalAttention, DynamicChunker, MiniSSM, SlotMemory, SlotRouter, FineAttention
 from .streaming import StreamingState
+from .mtp import MTPOutput
 
 @dataclass
 class SaccadeOutput:
@@ -31,6 +32,10 @@ class SACCADE(nn.Module):
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
         self.ssm_head = nn.Linear(config.d_ssm, config.vocab_size, bias=False)
         self.sequence_retrieval_gate = nn.Parameter(torch.tensor(-1.5))
+        self.mtp_heads = nn.ModuleList([
+            nn.Linear(config.d_model, config.vocab_size, bias=False)
+            for _ in range(config.mtp_num_tokens)
+        ])
 
     def forward_sequence(self, tokens: Tensor, state: StreamingState | None = None,
                          **kwargs) -> tuple[Tensor, StreamingState]:
@@ -42,13 +47,22 @@ class SACCADE(nn.Module):
         This is substantially cheaper than invoking ``forward`` once per
         token and preserves the exact streaming state at the end.
         """
+        logits, _, next_state = self._forward_sequence_features(tokens, state, **kwargs)
+        return logits, next_state
+
+    def _forward_sequence_features(
+        self, tokens: Tensor, state: StreamingState | None = None, **kwargs
+    ) -> tuple[Tensor, Tensor, StreamingState]:
         if tokens.ndim != 2:
             raise ValueError("tokens must have shape [batch, time]")
         batch, length = tokens.shape
         if length == 0:
             empty = tokens.new_empty(tokens.size(0), 0, self.config.vocab_size,
                                      dtype=self.embed.embedding.weight.dtype)
-            return empty, state or StreamingState.empty(batch, self.config.d_ssm, tokens.device)
+            hidden = tokens.new_empty(batch, 0, self.config.d_model,
+                                      dtype=self.embed.embedding.weight.dtype)
+            return empty, hidden, state or StreamingState.empty(
+                batch, self.config.d_ssm, tokens.device)
 
         h, addr = self.embed(tokens)
         local = self.local(h, self.config.w_fine)
@@ -56,7 +70,8 @@ class SACCADE(nn.Module):
         current_ssm = (None if state is None else
                        state.ssm.to(device=tokens.device, dtype=mixed.dtype))
         ssm_y, final_ssm = self.ssm(mixed, current_ssm)
-        direct = self.lm_head(local + self.ssm_to_model(ssm_y))
+        direct_hidden = local + self.ssm_to_model(ssm_y)
+        direct = self.lm_head(direct_hidden)
 
         base = (state.next_address.to(tokens.device) if state is not None else
                 torch.zeros(batch, dtype=torch.long, device=tokens.device))
@@ -66,6 +81,7 @@ class SACCADE(nn.Module):
                         slot.tokens.to(tokens.device, mixed.dtype))
              for slot in row] for row in state.slots]
         logits = []
+        hidden = []
         # Chunking this loop bounds temporary context lists and makes the
         # teacher-forcing path friendly to long streams without changing
         # attention locality.
@@ -89,10 +105,20 @@ class SACCADE(nn.Module):
                     context = torch.cat(pieces, 0)
                     rows.append(self.fine(mixed[b, t], context))
                 retrieval = torch.stack(rows)
-                logits.append(direct[:, t] +
-                              self.sequence_retrieval_gate.sigmoid() * self.lm_head(retrieval))
+                fused = direct[:, t] + self.sequence_retrieval_gate.sigmoid() * self.lm_head(retrieval)
+                logits.append(fused)
+                hidden.append(direct_hidden[:, t] +
+                             self.sequence_retrieval_gate.sigmoid() * retrieval)
         next_address = base + length
-        return torch.stack(logits, dim=1), StreamingState(final_ssm, slots, next_address)
+        return torch.stack(logits, dim=1), torch.stack(hidden, dim=1), StreamingState(
+                final_ssm, slots, next_address)
+
+    def forward_sequence_mtp(
+        self, tokens: Tensor, state: StreamingState | None = None, **kwargs
+    ) -> MTPOutput:
+        """Return primary and future-token logits from one causal pass."""
+        logits, hidden, next_state = self._forward_sequence_features(tokens, state, **kwargs)
+        return MTPOutput(logits, tuple(head(hidden) for head in self.mtp_heads), next_state)
     def forward(self, tokens: Tensor, state: StreamingState | None = None, temperature: float = 1.0,
                 threshold: float | None = None, top_k: int | None = None) -> SaccadeOutput:
         if tokens.ndim != 2:

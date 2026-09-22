@@ -19,7 +19,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from saccade import SACCADE, SaccadeConfig
 from saccade.benchmark import generate_retrieval_datasets, _batch
-from saccade.triton_kernels import fused_ema_update, slot_scores, triton_available
+from saccade.triton_kernels import fused_ema_update, mtp_cross_entropy, slot_scores, triton_available
 
 
 def _ema_reference(x: torch.Tensor, alpha: float) -> torch.Tensor:
@@ -58,6 +58,8 @@ def _kernel_report(device: torch.device) -> dict:
     x = torch.randn(8, 1024, 128, device=device)
     state = torch.randn(8, 128, device=device)
     keys = torch.randn(8, 64, 128, device=device)
+    mtp_logits = torch.randn(8 * 1024, 32000, device=device)
+    mtp_targets = torch.randint(0, 32000, (8 * 1024,), device=device)
     alpha = 0.9
     ema_ref = _ema_reference(x, alpha)
     slots_ref = _slot_reference(state, keys)
@@ -76,6 +78,10 @@ def _kernel_report(device: torch.device) -> dict:
         "ema_triton_peak_mb": _measure_peak(lambda: fused_ema_update(x, alpha), device),
         "slot_scores_pytorch_peak_mb": _measure_peak(lambda: _slot_reference(state, keys), device),
         "slot_scores_triton_peak_mb": _measure_peak(lambda: slot_scores(state, keys), device),
+        "mtp_ce_triton_ms": _measure(
+            lambda: mtp_cross_entropy(mtp_logits, mtp_targets), device, iters=20),
+        "mtp_ce_triton_peak_mb": _measure_peak(
+            lambda: mtp_cross_entropy(mtp_logits, mtp_targets), device),
     }
     report["ema_speedup"] = report["ema_pytorch_ms"] / report["ema_triton_ms"]
     report["slot_scores_speedup"] = report["slot_scores_pytorch_ms"] / report["slot_scores_triton_ms"]

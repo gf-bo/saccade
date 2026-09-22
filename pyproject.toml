@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "saccade"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local, addressable, causal memory for efficient long-context language models."
 readme = "README.md"
 license = { file = "LICENSE" }

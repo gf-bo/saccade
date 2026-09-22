@@ -57,6 +57,20 @@ if triton is not None:  # keep CPU imports safe when Triton is absent
         value = tl.sum(q * k, axis=0) / tl.sqrt(float(D))
         tl.store(scores + b * stride_ob + n * stride_on, value)
 
+    @triton.jit
+    def _cross_entropy_kernel(logits, targets, losses, stride_r, V: tl.constexpr,
+                              BLOCK_V: tl.constexpr, ignore_index: tl.constexpr):
+        row = tl.program_id(0)
+        cols = tl.arange(0, BLOCK_V)
+        values = tl.load(logits + row * stride_r + cols, mask=cols < V, other=-float("inf"))
+        target = tl.load(targets + row)
+        maximum = tl.max(values, axis=0)
+        denominator = tl.sum(tl.exp(values - maximum), axis=0)
+        selected = tl.load(logits + row * stride_r + target, mask=target != ignore_index, other=0.0)
+        loss = tl.where(target == ignore_index, 0.0,
+                        maximum + tl.log(denominator) - selected)
+        tl.store(losses + row, loss)
+
 
 def fused_ema_update(x: Tensor, alpha: Tensor | float) -> Tensor:
     """Compute the sequential EMA with an optional Triton inference kernel."""
@@ -90,6 +104,22 @@ def slot_scores(state: Tensor, keys: Tensor) -> Tensor:
         keys.stride(1), keys.stride(2), out.stride(0), out.stride(1),
         N=keys.size(1), D=keys.size(-1), BLOCK_D=block)
     return out.to(dtype=state.dtype)
+
+
+def mtp_cross_entropy(logits: Tensor, targets: Tensor, ignore_index: int = 0) -> Tensor:
+    """Per-row cross entropy with an optional Triton inference fast path."""
+    if logits.ndim != 2 or targets.ndim != 1 or logits.size(0) != targets.size(0):
+        raise ValueError("logits must be [N,V] and targets must be [N]")
+    if not (triton_available() and logits.is_cuda and not torch.is_grad_enabled()
+            and logits.is_contiguous() and targets.is_contiguous()):
+        return torch.nn.functional.cross_entropy(logits, targets, ignore_index=ignore_index)
+    out = torch.empty(logits.size(0), device=logits.device, dtype=torch.float32)
+    block = triton.next_power_of_2(logits.size(1))
+    _cross_entropy_kernel[(logits.size(0),)](
+        logits, targets, out, logits.stride(0), V=logits.size(1),
+        BLOCK_V=block, ignore_index=ignore_index)
+    valid = targets != ignore_index
+    return out[valid].mean() if valid.any() else out.new_zeros(())
 
 
 def causal_local_attention(q: Tensor, k: Tensor, v: Tensor, window: int) -> Tensor:

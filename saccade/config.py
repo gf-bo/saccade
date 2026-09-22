@@ -22,6 +22,8 @@ class SaccadeConfig:
     ffn_mult: int = 4
     sequence_chunk_size: int = 64
     pad_id: int = 0
+    mtp_num_tokens: int = 0
+    mtp_loss_weight: float = 0.5
 
     def __post_init__(self) -> None:
         for name in ("d_model", "d_addr", "d_ssm", "n_heads", "w_fine", "w_coarse", "s_max", "l_slot", "top_k", "ffn_mult", "sequence_chunk_size"):
@@ -31,6 +33,10 @@ class SaccadeConfig:
             raise ValueError("d_model must be divisible by n_heads")
         if not 1 <= self.top_k <= self.s_max:
             raise ValueError("top_k must be in [1, s_max]")
+        if self.mtp_num_tokens < 0:
+            raise ValueError("mtp_num_tokens must be non-negative")
+        if self.mtp_loss_weight < 0:
+            raise ValueError("mtp_loss_weight must be non-negative")
 
 @dataclass
 class CurriculumConfig:
