@@ -23,7 +23,7 @@ attention for bounded local computation and explicit long-context memory.
 ## Installation
 
 ```bash
-python -m pip install saccade
+python -m pip install git+https://github.com/gf-bo/saccade.git
 ```
 
 Install from source with the development dependencies:
