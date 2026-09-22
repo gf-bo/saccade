@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "saccade"
+version = "0.2.0"
+description = "Local, addressable, causal memory for efficient long-context language models."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "Gerson Buenahora" }]
+keywords = ["pytorch", "transformers", "language-modeling", "long-context", "triton"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = ["torch>=2.0"]
+
+[project.urls]
+Homepage = "https://github.com/gf-bo/saccade"
+Repository = "https://github.com/gf-bo/saccade"
+Issues = "https://github.com/gf-bo/saccade/issues"
+
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+dev = ["build>=1.0", "pytest>=7.0"]
+
+[tool.setuptools.packages.find]
+include = ["saccade*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

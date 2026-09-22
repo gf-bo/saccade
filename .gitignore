@@ -1,0 +1,31 @@
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Local benchmark outputs and model artifacts
+benchmark_results*/
+*.pt
+*.pth
+
+# Local Kaggle downloads and generated logs
+kaggle_output*/
+scripts/kaggle_kernel/saccade/
+scripts/kaggle_kernel/__pycache__/
+*.log
+
+# Editors and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
