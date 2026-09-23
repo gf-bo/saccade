@@ -1,0 +1,13 @@
+{
+  "id": "gersonbuenahora/saccade-fineweb-edu-50m",
+  "title": "SACCADE FineWeb-Edu 50M",
+  "code_file": "saccade_fineweb_edu_50m.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [],
+  "competition_sources": [],
+  "kernel_sources": []
+}

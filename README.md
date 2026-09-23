@@ -196,6 +196,29 @@ parameter-matched causal Transformer, and records loss, perplexity, exact
 retrieval, semantic retrieval, and generation metrics. Generated datasets,
 checkpoints, and logs are ignored by Git.
 
+## Kaggle FineWeb-Edu training
+
+The repository includes a real Kaggle notebook at
+`notebooks/saccade_fineweb_edu_50m.ipynb` and its reusable entry point at
+`scripts/kaggle_fineweb_edu_50m.py`. The default run uses:
+
+- FineWeb-Edu streaming (`HuggingFaceFW/fineweb-edu`, `sample-10BT`);
+- a 600M-token training cap for one streamed epoch;
+- 8,000 held-out packed evaluation sequences;
+- 1,024-token context (changeable to 2,048);
+- a 47.6M-parameter SACCADE configuration with GPT-2's 50,257-token
+  vocabulary;
+- FP16 CUDA autocast, fused AdamW when available, gradient accumulation,
+  clipping, warmup/cosine decay, checkpointing, and optional DDP;
+- tokenizer, model, configuration, `metrics.json`, and `eval_table.csv`
+  exported to `/kaggle/working/saccade_fineweb_edu_50m`.
+
+MTP remains opt-in because each vocabulary projection head materially
+increases parameter and activation memory. Add `--mtp-horizon 2` to run with
+two auxiliary future-token heads. The script uses PyTorch autograd for
+training and the verified Triton paths for compatible evaluation/inference
+operations.
+
 ## License
 
 Released under the [MIT License](LICENSE).
