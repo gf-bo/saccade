@@ -40,6 +40,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--warmup-ratio", type=float, default=0.02)
     p.add_argument("--eval-every", type=int, default=2_000)
     p.add_argument("--save-every", type=int, default=10_000)
+    p.add_argument("--log-every", type=int, default=100)
+    p.add_argument("--eval-before-sequences", type=int, default=128)
+    p.add_argument("--eval-after-sequences", type=int, default=256)
+    p.add_argument("--eval-reserve-documents", type=int, default=8_000)
+    p.add_argument("--max-hours", type=float, default=5.5)
     p.add_argument("--seed", type=int, default=1729)
     p.add_argument("--mtp-horizon", type=int, default=0)
     p.add_argument("--tokenizer", default="gpt2")
@@ -179,12 +184,20 @@ def main() -> None:
             weight_decay=args.weight_decay,
         )
     scaler = torch.cuda.amp.GradScaler(enabled=True)
+    if rank == 0:
+        torch.save(raw_model.state_dict(), args.output / "model_init.pt")
+        tokenizer.save_pretrained(args.output / "tokenizer")
+        save_json(args.output / "config.json", config.__dict__)
     train_iter = iter(packed_sequences(
-        stream, tokenizer, args.context_length, rank, world, start_document=10_000))
+        stream, tokenizer, args.context_length, rank, world,
+        start_document=args.eval_reserve_documents))
     eval_stream = load_eval_stream(args)
     eval_before = evaluate(
-        raw_model, packed_sequences(eval_stream, tokenizer, args.context_length, rank, world),
-        args.eval_sequences, args.micro_batch_size, device)
+        raw_model,
+        packed_sequences(eval_stream, tokenizer, args.context_length, rank, world),
+        min(args.eval_before_sequences, args.eval_sequences),
+        args.micro_batch_size,
+        device)
     steps = math.ceil(args.train_tokens / (
         args.context_length * args.micro_batch_size * world * args.grad_accumulation))
     warmup = max(1, int(steps * args.warmup_ratio))
@@ -215,18 +228,29 @@ def main() -> None:
             1 + math.cos(math.pi * (progress - warmup / steps) / max(1e-8, 1 - warmup / steps)))
         for group in optimizer.param_groups:
             group["lr"] = args.learning_rate * max(0.0, min(1.0, lr_scale))
-        if rank == 0 and ((step + 1) % args.eval_every == 0 or step == 0):
+        elapsed_hours = (time.perf_counter() - start_time) / 3600.0
+        if rank == 0 and ((step + 1) % args.log_every == 0 or step == 0):
             record = {"step": step + 1, "tokens": seen_tokens, "train_loss": loss_value,
                       "lr": optimizer.param_groups[0]["lr"],
-                      "tokens_per_second": seen_tokens / max(1e-6, time.perf_counter() - start_time)}
+                      "tokens_per_second": seen_tokens / max(1e-6, time.perf_counter() - start_time),
+                      "elapsed_hours": elapsed_hours}
             history.append(record)
             print(json.dumps(record), flush=True)
-        if rank == 0 and (step + 1) % args.save_every == 0:
+        if rank == 0 and ((step + 1) % args.save_every == 0 or (step + 1) % args.log_every == 0):
             torch.save(raw_model.state_dict(), args.output / "checkpoint.pt")
+            save_json(args.output / "progress.json", record)
+        if elapsed_hours >= args.max_hours:
+            if rank == 0:
+                print(json.dumps({"event": "time_limit_reached", "step": step + 1,
+                                  "elapsed_hours": elapsed_hours}), flush=True)
+            break
     eval_stream = load_eval_stream(args)
     eval_after = evaluate(
-        raw_model, packed_sequences(eval_stream, tokenizer, args.context_length, rank, world),
-        args.eval_sequences, args.micro_batch_size, device)
+        raw_model,
+        packed_sequences(eval_stream, tokenizer, args.context_length, rank, world),
+        min(args.eval_after_sequences, args.eval_sequences),
+        args.micro_batch_size,
+        device)
     if rank == 0:
         torch.save(raw_model.state_dict(), args.output / "model.pt")
         tokenizer.save_pretrained(args.output / "tokenizer")
