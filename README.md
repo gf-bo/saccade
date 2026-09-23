@@ -141,10 +141,12 @@ config = SaccadeConfig(
 
 ## Optional Triton kernels
 
-The optional kernels implement the sequential EMA update and slot dot-product
-scoring, plus MTP cross-entropy evaluation. They are dispatched only for
-compatible contiguous CUDA tensors and inference-only calls. Training keeps
-the PyTorch path so autograd remains complete and predictable.
+The optional kernels implement the sequential EMA update, bounded slot
+dot-product scoring, causal local attention, and MTP cross-entropy evaluation.
+They are dispatched only for compatible contiguous CUDA tensors and
+inference-only calls. Training keeps the PyTorch path so autograd remains
+complete and predictable; this avoids claiming a training speedup without a
+verified Triton backward kernel.
 
 ```bash
 python scripts/benchmark_triton.py --device cpu
@@ -155,7 +157,10 @@ On a Tesla T4, the measured EMA kernel was 62.76x faster than its PyTorch
 reference (0.5605 ms vs. 35.1815 ms) and used 34.30 MiB vs. 38.30 MiB peak
 allocation for the reported workload. For only 64 slots, PyTorch `bmm` was
 faster than the Triton scoring kernel; the implementation deliberately keeps
-the faster path instead of forcing Triton.
+the faster path instead of forcing Triton. The MTP-enabled Kaggle validation
+also completed on a Tesla T4 with Triton active: EMA measured 0.5534 ms, slot
+scoring 0.0487 ms, and MTP cross-entropy 4.3690 ms for the reported workload.
+Maximum numerical errors against PyTorch were below `5e-7`.
 
 The reproducible Kaggle launcher is `scripts/kaggle_two_t4.py`. It supports
 NCCL/DDP when two GPUs are actually assigned:

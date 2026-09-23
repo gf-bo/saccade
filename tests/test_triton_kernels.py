@@ -4,6 +4,7 @@ import torch
 from saccade.triton_kernels import (
     causal_local_attention,
     fused_ema_update,
+    mtp_cross_entropy,
     slot_scores,
     triton_available,
 )
@@ -26,6 +27,16 @@ def test_ema_and_scores_cpu_match_reference_and_have_gradients():
     assert torch.allclose(scores, (state[:, None] * keys).sum(-1) / 5**0.5)
     (ema.square().mean() + scores.square().mean()).backward()
     assert x.grad is not None and state.grad is not None and keys.grad is not None
+
+
+def test_mtp_cross_entropy_cpu_matches_torch():
+    logits = torch.randn(12, 19, requires_grad=True)
+    targets = torch.randint(0, 19, (12,))
+    actual = mtp_cross_entropy(logits, targets)
+    expected = torch.nn.functional.cross_entropy(logits, targets)
+    assert torch.allclose(actual, expected)
+    actual.backward()
+    assert logits.grad is not None
 
 
 @pytest.mark.skipif(not triton_available(), reason="CUDA and Triton are unavailable")

@@ -71,6 +71,49 @@ if triton is not None:  # keep CPU imports safe when Triton is absent
                         maximum + tl.log(denominator) - selected)
         tl.store(losses + row, loss)
 
+    @triton.jit
+    def _local_attention_kernel(q, k, v, out, sqb, sqh, sqt, sqd,
+                                skb, skh, skt, skd, svb, svh, svt, svd,
+                                sob, soh, sot, sod, T: tl.constexpr,
+                                D: tl.constexpr, W: tl.constexpr,
+                                BLOCK_D: tl.constexpr):
+        pid = tl.program_id(0)
+        h = pid % tl.num_programs(1)
+        tmp = pid // tl.num_programs(1)
+        t = tmp % T
+        b = tmp // T
+        d = tl.arange(0, BLOCK_D)
+        qv = tl.load(q + b * sqb + h * sqh + t * sqt + d * sqd,
+                     mask=d < D, other=0).to(tl.float32)
+        maximum = -float("inf")
+        for j in range(0, W):
+            pos = t - W + 1 + j
+            valid = (pos >= 0) & (pos <= t)
+            kv = tl.load(k + b * skb + h * skh + pos * skt + d * skd,
+                         mask=(d < D) & valid, other=0).to(tl.float32)
+            score = tl.sum(qv * kv, axis=0) / tl.sqrt(float(D))
+            maximum = tl.maximum(maximum, tl.where(valid, score, -float("inf")))
+        denominator = 0.0
+        for j in range(0, W):
+            pos = t - W + 1 + j
+            valid = (pos >= 0) & (pos <= t)
+            kv = tl.load(k + b * skb + h * skh + pos * skt + d * skd,
+                         mask=(d < D) & valid, other=0).to(tl.float32)
+            score = tl.sum(qv * kv, axis=0) / tl.sqrt(float(D))
+            denominator += tl.where(valid, tl.exp(score - maximum), 0.0)
+        acc = tl.zeros((BLOCK_D,), dtype=tl.float32)
+        for j in range(0, W):
+            pos = t - W + 1 + j
+            valid = (pos >= 0) & (pos <= t)
+            kv = tl.load(k + b * skb + h * skh + pos * skt + d * skd,
+                         mask=(d < D) & valid, other=0).to(tl.float32)
+            vv = tl.load(v + b * svb + h * svh + pos * svt + d * svd,
+                         mask=(d < D) & valid, other=0).to(tl.float32)
+            score = tl.sum(qv * kv, axis=0) / tl.sqrt(float(D))
+            acc += tl.where(valid, tl.exp(score - maximum) / denominator, 0.0) * vv
+        tl.store(out + b * sob + h * soh + t * sot + d * sod,
+                 acc.to(out.dtype.element_ty), mask=d < D)
+
 
 def fused_ema_update(x: Tensor, alpha: Tensor | float) -> Tensor:
     """Compute the sequential EMA with an optional Triton inference kernel."""
@@ -128,11 +171,19 @@ def causal_local_attention(q: Tensor, k: Tensor, v: Tensor, window: int) -> Tens
     The compact Triton kernel is intentionally kept as a separate opt-in
     primitive; the module-level attention continues using PyTorch projections.
     """
-    # A conservative reference path is used until callers provide packed QKV.
-    # This API is still useful for CUDA correctness/benchmark tests.
+    if q.ndim != 4 or k.shape != q.shape or v.shape != q.shape:
+        raise ValueError("q, k and v must have shape [B,H,T,D]")
     b, h, t, d = q.shape
-    idx = torch.arange(t, device=q.device)
-    mask = (idx[None, :] > idx[:, None]) | (idx[None, :] < idx[:, None] - window + 1)
-    logits = torch.matmul(q, k.transpose(-1, -2)) / math.sqrt(d)
-    logits = logits.masked_fill(mask, float("-inf"))
-    return torch.matmul(torch.softmax(logits, -1), v)
+    if not (triton_available() and q.is_cuda and not torch.is_grad_enabled()
+            and q.is_contiguous() and k.is_contiguous() and v.is_contiguous()):
+        idx = torch.arange(t, device=q.device)
+        mask = (idx[None, :] > idx[:, None]) | (idx[None, :] < idx[:, None] - window + 1)
+        logits = torch.matmul(q, k.transpose(-1, -2)) / math.sqrt(d)
+        logits = logits.masked_fill(mask, float("-inf"))
+        return torch.matmul(torch.softmax(logits, -1), v)
+    out = torch.empty_like(q)
+    block = triton.next_power_of_2(d)
+    _local_attention_kernel[(b * t, h)](
+        q, k, v, out, *q.stride(), *k.stride(), *v.stride(), *out.stride(),
+        T=t, D=d, W=window, BLOCK_D=block, num_warps=4)
+    return out
